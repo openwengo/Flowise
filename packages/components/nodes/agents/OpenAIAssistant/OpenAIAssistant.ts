@@ -18,6 +18,7 @@ import { AnalyticHandler } from '../../../src/handler'
 import { Moderation, checkInputs, streamResponse } from '../../moderation/Moderation'
 import { formatResponse } from '../../outputparsers/OutputParserHelpers'
 import { addSingleFileToStorage } from '../../../src/storageUtils'
+import { DynamicStructuredTool } from '../../tools/OpenAPIToolkit/core'
 
 const lenticularBracketRegex = /【[^】]*】/g
 const imageRegex = /<img[^>]*\/>/g
@@ -490,6 +491,7 @@ class OpenAIAssistant_Agents implements INode {
                     if (event.event === 'thread.run.requires_action') {
                         if (event.data.required_action?.submit_tool_outputs.tool_calls) {
                             const actions: ICommonObject[] = []
+                            console.log("OpenAIAssistant tools calls:", event.data.required_action.submit_tool_outputs.tool_calls);
                             event.data.required_action.submit_tool_outputs.tool_calls.forEach((item) => {
                                 const functionCall = item.function
                                 let args = {}
@@ -519,6 +521,7 @@ class OpenAIAssistant_Agents implements INode {
                                         chatId: options.chatId,
                                         input
                                     })
+                                    console.log("Assistant toolOutput...")
                                     await analyticHandlers.onToolEnd(toolIds, toolOutput)
                                     submitToolOutputs.push({
                                         tool_call_id: actions[i].toolCallId,
@@ -539,11 +542,15 @@ class OpenAIAssistant_Agents implements INode {
                             }
 
                             try {
+                                console.log("OpenAI Assistant: submit tool outputs!");
                                 const stream = openai.beta.threads.runs.submitToolOutputsStream(threadId, runThreadId, {
                                     tool_outputs: submitToolOutputs
                                 })
 
                                 for await (const event of stream) {
+                                    if (event.event !== 'thread.message.delta') {
+                                        console.log("OpenAI Assistant: receive submit tool response", event);
+                                    }
                                     if (event.event === 'thread.message.delta') {
                                         const chunk = event.data.delta.content?.[0]
                                         if (chunk && 'text' in chunk && chunk.text?.value) {
@@ -556,6 +563,97 @@ class OpenAIAssistant_Agents implements INode {
                                             }
                                             if (sseStreamer) {
                                                 sseStreamer.streamTokenEvent(chatId, chunk.text.value)
+                                            }
+                                        }
+                                    } else if (event.event === 'thread.run.requires_action') {
+                                        if (event.data.required_action?.submit_tool_outputs.tool_calls) {
+                                            const actions: ICommonObject[] = []
+                                            console.log("OpenAIAssistant nested tools calls:", event.data.required_action.submit_tool_outputs.tool_calls);
+                                            event.data.required_action.submit_tool_outputs.tool_calls.forEach((item) => {
+                                                const functionCall = item.function
+                                                let args = {}
+                                                try {
+                                                    args = JSON.parse(functionCall.arguments)
+                                                } catch (e) {
+                                                    console.error('Error parsing arguments, default to empty object')
+                                                }
+                                                actions.push({
+                                                    tool: functionCall.name,
+                                                    toolInput: args,
+                                                    toolCallId: item.id
+                                                })
+                                            })
+
+                                            const submitToolOutputs = []
+                                            for (let i = 0; i < actions.length; i += 1) {
+                                                const tool = tools.find((tool: any) => tool.name === actions[i].tool)
+                                                if (!tool) continue
+
+                                                // Start tool analytics
+                                                const toolIds = await analyticHandlers.onToolStart(tool.name, actions[i].toolInput, parentIds)
+
+                                                try {
+                                                    const toolOutput = await tool.call(actions[i].toolInput, undefined, undefined, {
+                                                        sessionId: threadId,
+                                                        chatId: options.chatId,
+                                                        input
+                                                    })
+                                                    console.log("Assistant nested toolOutput:", toolOutput)
+                                                    await analyticHandlers.onToolEnd(toolIds, toolOutput)
+                                                    submitToolOutputs.push({
+                                                        tool_call_id: actions[i].toolCallId,
+                                                        output: toolOutput
+                                                    })
+                                                    usedTools.push({
+                                                        tool: tool.name,
+                                                        toolInput: actions[i].toolInput,
+                                                        toolOutput
+                                                    })
+                                                } catch (e) {
+                                                    await analyticHandlers.onToolEnd(toolIds, e)
+                                                    console.error('Error executing tool', e)
+                                                    throw new Error(
+                                                        `Error executing tool. Tool: ${tool.name}. Thread ID: ${threadId}. Run ID: ${runThreadId}`
+                                                    )
+                                                }
+                                            }
+
+                                            try {
+                                                console.log("OpenAI Assistant: submit nested tool outputs!");
+                                                const nestedStream = openai.beta.threads.runs.submitToolOutputsStream(threadId, runThreadId, {
+                                                    tool_outputs: submitToolOutputs
+                                                })
+
+                                                for await (const nestedEvent of nestedStream) {
+                                                    if (nestedEvent.event !== 'thread.message.delta') {
+                                                        console.log("OpenAI Assistant: receive nested submit tool response", nestedEvent);
+                                                    }
+                                                    if (nestedEvent.event === 'thread.message.delta') {
+                                                        const chunk = nestedEvent.data.delta.content?.[0]
+                                                        if (chunk && 'text' in chunk && chunk.text?.value) {
+                                                            text += chunk.text.value
+                                                            if (!isStreamingStarted) {
+                                                                isStreamingStarted = true
+                                                                if (sseStreamer) {
+                                                                    sseStreamer.streamStartEvent(chatId, chunk.text.value)
+                                                                }
+                                                            }
+                                                            if (sseStreamer) {
+                                                                sseStreamer.streamTokenEvent(chatId, chunk.text.value)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            } catch (error) {
+                                                console.error('Error submitting nested tool outputs:', error)
+                                                await openai.beta.threads.runs.cancel(threadId, runThreadId)
+
+                                                const errMsg = `Error submitting nested tool outputs. Thread ID: ${threadId}. Run ID: ${runThreadId}`
+
+                                                await analyticHandlers.onLLMError(llmIds, errMsg)
+                                                await analyticHandlers.onChainError(parentIds, errMsg, true)
+
+                                                throw new Error(errMsg)
                                             }
                                         }
                                     }
@@ -895,15 +993,56 @@ const downloadFile = async (openAIApiKey: string, fileObj: any, fileName: string
     }
 }
 
+interface JSONSchema {
+    type?: string
+    properties?: Record<string, JSONSchema>
+    additionalProperties?: boolean
+    required?: string[]
+    [key: string]: any
+}
+
 const formatToOpenAIAssistantTool = (tool: any): OpenAI.Beta.FunctionTool => {
-    return {
+    const parameters = zodToJsonSchema(tool.schema) as JSONSchema
+
+    // For strict tools, we need to:
+    // 1. Set additionalProperties to false
+    // 2. Make all parameters required
+    // 3. Set the strict flag
+    if (tool instanceof DynamicStructuredTool && tool.isStrict()) {
+        // Get all property names from the schema
+        const properties = parameters.properties || {}
+        const allPropertyNames = Object.keys(properties)
+
+        parameters.additionalProperties = false
+        parameters.required = allPropertyNames
+
+        // Handle nested objects
+        for (const [_, prop] of Object.entries(properties)) {
+            if (prop.type === 'object') {
+                prop.additionalProperties = false
+                if (prop.properties) {
+                    prop.required = Object.keys(prop.properties)
+                }
+            }
+        }
+    }
+
+    const functionTool: OpenAI.Beta.FunctionTool = {
         type: 'function',
         function: {
             name: tool.name,
             description: tool.description,
-            parameters: zodToJsonSchema(tool.schema)
+            parameters
         }
     }
+
+    // Add strict property if the tool is marked as strict
+    if (tool instanceof DynamicStructuredTool && tool.isStrict()) {
+        (functionTool.function as any).strict = true
+    }
+
+    console.log("formatToOpenAIAssistantTool", functionTool, JSON.stringify(parameters))
+    return functionTool
 }
 
 module.exports = { nodeClass: OpenAIAssistant_Agents }

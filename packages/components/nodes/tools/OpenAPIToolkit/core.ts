@@ -104,6 +104,7 @@ export interface DynamicStructuredToolInput<
     method: string
     headers: ICommonObject
     customCode?: string
+    strict?: boolean
 }
 
 export class DynamicStructuredTool<
@@ -121,6 +122,8 @@ export class DynamicStructuredTool<
     headers: ICommonObject
 
     customCode?: string
+
+    strict?: boolean
 
     func: DynamicStructuredToolInput['func']
 
@@ -140,6 +143,8 @@ export class DynamicStructuredTool<
         this.method = fields.method
         this.headers = fields.headers
         this.customCode = fields.customCode
+        this.strict = fields.strict
+        console.log(`construct tool with name: ${this.name}, baseUrl: ${this.baseUrl}, method: ${this.method}, schema: ${JSON.stringify(this.schema)}`)
     }
 
     async call(
@@ -252,5 +257,9 @@ export class DynamicStructuredTool<
 
     setFlowObject(flow: any) {
         this.flowObj = flow
+    }
+
+    isStrict(): boolean {
+        return this.strict === true
     }
 }

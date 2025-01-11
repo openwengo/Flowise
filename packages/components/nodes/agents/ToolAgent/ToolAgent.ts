@@ -313,7 +313,9 @@ const prepareAgent = async (
         throw new Error(`This agent requires that the "bindTools()" method be implemented on the input model.`)
     }
 
-    const modelWithTools = model.bindTools(tools)
+    // Cast to any to allow OpenAI-specific options
+    console.log("bindTools with strict");
+    const modelWithTools = (model as any).bindTools(tools, { strict: true })
 
     const runnableAgent = RunnableSequence.from([
         {
