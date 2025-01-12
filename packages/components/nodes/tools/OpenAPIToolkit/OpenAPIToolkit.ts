@@ -50,6 +50,13 @@ class OpenAPIToolkit_Tools implements INode {
                 optional: true
             },
             {
+                label: 'Remove null parameters',
+                name: 'removeNulls',
+                type: 'boolean',
+                optional: true,
+                description: 'Remove all keys with null values from the parsed arguments'
+            },
+            {
                 label: 'Custom Code',
                 name: 'customCode',
                 type: 'code',
@@ -72,6 +79,7 @@ class OpenAPIToolkit_Tools implements INode {
         const yamlFileBase64 = nodeData.inputs?.yamlFile as string
         const customCode = nodeData.inputs?.customCode as string
         const _headers = nodeData.inputs?.headers as string
+        const removeNulls = nodeData.inputs?.removeNulls as boolean
 
         const headers = typeof _headers === 'object' ? _headers : _headers ? JSON.parse(_headers) : {}
 
@@ -108,7 +116,7 @@ class OpenAPIToolkit_Tools implements INode {
         const flow = { chatflowId: options.chatflowid }
         
         console.log("call getTools");
-        const tools = getTools(_data.paths, baseUrl, headers, variables, flow, toolReturnDirect, customCode)
+        const tools = getTools(_data.paths, baseUrl, headers, variables, flow, toolReturnDirect, customCode, removeNulls)
         return tools
     }
 }
@@ -224,7 +232,8 @@ const getTools = (
     variables: IVariable[],
     flow: ICommonObject,
     returnDirect: boolean,
-    customCode?: string
+    customCode?: string,
+    removeNulls?: boolean
 ) => {
     const tools = []
     for (const path in paths) {
@@ -305,7 +314,8 @@ const getTools = (
                 method: method,
                 headers,
                 customCode,
-                strict: spec['x-strict'] === true
+                strict: spec['x-strict'] === true,
+                removeNulls
             }
 
             const dynamicStructuredTool = new DynamicStructuredTool(toolObj)

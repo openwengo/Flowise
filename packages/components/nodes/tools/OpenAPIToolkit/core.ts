@@ -7,6 +7,20 @@ import { CallbackManagerForToolRun, Callbacks, CallbackManager, parseCallbackCon
 import { availableDependencies, defaultAllowBuiltInDep, prepareSandboxVars } from '../../../src/utils'
 import { ICommonObject } from '../../../src/Interface'
 
+const removeNulls = (obj: Record<string, any>) => {
+    Object.keys(obj).forEach(key => {
+        if (obj[key] === null) {
+            delete obj[key]
+        } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+            removeNulls(obj[key])
+            if (Object.keys(obj[key]).length === 0) {
+                delete obj[key]
+            }
+        }
+    })
+    return obj
+}
+
 interface HttpRequestObject {
     PathParameters?: Record<string, any>
     QueryParameters?: Record<string, any>
@@ -105,6 +119,7 @@ export interface DynamicStructuredToolInput<
     headers: ICommonObject
     customCode?: string
     strict?: boolean
+    removeNulls?: boolean
 }
 
 export class DynamicStructuredTool<
@@ -131,6 +146,7 @@ export class DynamicStructuredTool<
     schema: T
     private variables: any[]
     private flowObj: any
+    private removeNulls: boolean
 
     constructor(fields: DynamicStructuredToolInput<T>) {
         super(fields)
@@ -144,6 +160,7 @@ export class DynamicStructuredTool<
         this.headers = fields.headers
         this.customCode = fields.customCode
         this.strict = fields.strict
+        this.removeNulls = fields.removeNulls ?? false
         console.log(`construct tool with name: ${this.name}, baseUrl: ${this.baseUrl}, method: ${this.method}, schema: ${JSON.stringify(this.schema)}`)
     }
 
@@ -161,7 +178,9 @@ export class DynamicStructuredTool<
         try {
             parsed = await this.schema.parseAsync(arg)
         } catch (e) {
-            throw new ToolInputParsingException(`Received tool input did not match expected schema`, JSON.stringify(arg))
+            //throw new ToolInputParsingException(`Received tool input did not match expected schema`, JSON.stringify(arg))
+            console.log(`Received tool input did not match expected schema`, JSON.stringify(arg), this.schema)
+            parsed = arg
         }
         const callbackManager_ = await CallbackManager.configure(
             config.callbacks,
@@ -202,9 +221,15 @@ export class DynamicStructuredTool<
         flowConfig?: { sessionId?: string; chatId?: string; input?: string; state?: ICommonObject }
     ): Promise<string> {
         let sandbox: any = {}
-        if (typeof arg === 'object' && Object.keys(arg).length) {
-            for (const item in arg) {
-                sandbox[`$${item}`] = arg[item]
+        let processedArg = { ...arg }
+        
+        if (this.removeNulls && typeof processedArg === 'object' && processedArg !== null) {
+            processedArg = removeNulls(processedArg)
+        }
+        
+        if (typeof processedArg === 'object' && Object.keys(processedArg).length) {
+            for (const item in processedArg) {
+                sandbox[`$${item}`] = processedArg[item]
             }
         }
 

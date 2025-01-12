@@ -23,6 +23,21 @@ import { DynamicStructuredTool } from '../../tools/OpenAPIToolkit/core'
 const lenticularBracketRegex = /【[^】]*】/g
 const imageRegex = /<img[^>]*\/>/g
 
+const removeNulls = (obj: Record<string, any>) => {
+    Object.keys(obj).forEach(key => {
+        if (obj[key] === null) {
+            delete obj[key]
+        } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+            removeNulls(obj[key])
+            // If the object is empty after removing nulls, remove it too
+            if (Object.keys(obj[key]).length === 0) {
+                delete obj[key]
+            }
+        }
+    })
+    return obj
+}
+
 class OpenAIAssistant_Agents implements INode {
     label: string
     name: string
@@ -491,12 +506,12 @@ class OpenAIAssistant_Agents implements INode {
                     if (event.event === 'thread.run.requires_action') {
                         if (event.data.required_action?.submit_tool_outputs.tool_calls) {
                             const actions: ICommonObject[] = []
-                            console.log("OpenAIAssistant tools calls:", event.data.required_action.submit_tool_outputs.tool_calls);
                             event.data.required_action.submit_tool_outputs.tool_calls.forEach((item) => {
                                 const functionCall = item.function
-                                let args = {}
+                                let args: Record<string, any> = {}
                                 try {
                                     args = JSON.parse(functionCall.arguments)
+                                    //args = removeNulls(args)
                                 } catch (e) {
                                     console.error('Error parsing arguments, default to empty object')
                                 }
@@ -506,14 +521,14 @@ class OpenAIAssistant_Agents implements INode {
                                     toolCallId: item.id
                                 })
                             })
-
+                            console.log("OpenAIAssistant tools calls:", event.data.required_action.submit_tool_outputs.tool_calls, actions)
                             const submitToolOutputs = []
                             for (let i = 0; i < actions.length; i += 1) {
                                 const tool = tools.find((tool: any) => tool.name === actions[i].tool)
                                 if (!tool) continue
 
                                 // Start tool analytics
-                                const toolIds = await analyticHandlers.onToolStart(tool.name, actions[i].toolInput, parentIds)
+                                const toolIds = await analyticHandlers.onToolStart(tool.name, actions[i].toolInput, parentIds )
 
                                 try {
                                     const toolOutput = await tool.call(actions[i].toolInput, undefined, undefined, {
@@ -542,125 +557,23 @@ class OpenAIAssistant_Agents implements INode {
                             }
 
                             try {
-                                console.log("OpenAI Assistant: submit tool outputs!");
-                                const stream = openai.beta.threads.runs.submitToolOutputsStream(threadId, runThreadId, {
-                                    tool_outputs: submitToolOutputs
+                                await handleToolSubmission({
+                                    openai,
+                                    threadId,
+                                    runThreadId,
+                                    submitToolOutputs,
+                                    tools,
+                                    analyticHandlers,
+                                    parentIds,
+                                    llmIds,
+                                    sseStreamer,
+                                    chatId,
+                                    options,
+                                    input,
+                                    usedTools,
+                                    text,
+                                    isStreamingStarted
                                 })
-
-                                for await (const event of stream) {
-                                    if (event.event !== 'thread.message.delta') {
-                                        console.log("OpenAI Assistant: receive submit tool response", event);
-                                    }
-                                    if (event.event === 'thread.message.delta') {
-                                        const chunk = event.data.delta.content?.[0]
-                                        if (chunk && 'text' in chunk && chunk.text?.value) {
-                                            text += chunk.text.value
-                                            if (!isStreamingStarted) {
-                                                isStreamingStarted = true
-                                                if (sseStreamer) {
-                                                    sseStreamer.streamStartEvent(chatId, chunk.text.value)
-                                                }
-                                            }
-                                            if (sseStreamer) {
-                                                sseStreamer.streamTokenEvent(chatId, chunk.text.value)
-                                            }
-                                        }
-                                    } else if (event.event === 'thread.run.requires_action') {
-                                        if (event.data.required_action?.submit_tool_outputs.tool_calls) {
-                                            const actions: ICommonObject[] = []
-                                            console.log("OpenAIAssistant nested tools calls:", event.data.required_action.submit_tool_outputs.tool_calls);
-                                            event.data.required_action.submit_tool_outputs.tool_calls.forEach((item) => {
-                                                const functionCall = item.function
-                                                let args = {}
-                                                try {
-                                                    args = JSON.parse(functionCall.arguments)
-                                                } catch (e) {
-                                                    console.error('Error parsing arguments, default to empty object')
-                                                }
-                                                actions.push({
-                                                    tool: functionCall.name,
-                                                    toolInput: args,
-                                                    toolCallId: item.id
-                                                })
-                                            })
-
-                                            const submitToolOutputs = []
-                                            for (let i = 0; i < actions.length; i += 1) {
-                                                const tool = tools.find((tool: any) => tool.name === actions[i].tool)
-                                                if (!tool) continue
-
-                                                // Start tool analytics
-                                                const toolIds = await analyticHandlers.onToolStart(tool.name, actions[i].toolInput, parentIds)
-
-                                                try {
-                                                    const toolOutput = await tool.call(actions[i].toolInput, undefined, undefined, {
-                                                        sessionId: threadId,
-                                                        chatId: options.chatId,
-                                                        input
-                                                    })
-                                                    console.log("Assistant nested toolOutput:", toolOutput)
-                                                    await analyticHandlers.onToolEnd(toolIds, toolOutput)
-                                                    submitToolOutputs.push({
-                                                        tool_call_id: actions[i].toolCallId,
-                                                        output: toolOutput
-                                                    })
-                                                    usedTools.push({
-                                                        tool: tool.name,
-                                                        toolInput: actions[i].toolInput,
-                                                        toolOutput
-                                                    })
-                                                } catch (e) {
-                                                    await analyticHandlers.onToolEnd(toolIds, e)
-                                                    console.error('Error executing tool', e)
-                                                    throw new Error(
-                                                        `Error executing tool. Tool: ${tool.name}. Thread ID: ${threadId}. Run ID: ${runThreadId}`
-                                                    )
-                                                }
-                                            }
-
-                                            try {
-                                                console.log("OpenAI Assistant: submit nested tool outputs!");
-                                                const nestedStream = openai.beta.threads.runs.submitToolOutputsStream(threadId, runThreadId, {
-                                                    tool_outputs: submitToolOutputs
-                                                })
-
-                                                for await (const nestedEvent of nestedStream) {
-                                                    if (nestedEvent.event !== 'thread.message.delta') {
-                                                        console.log("OpenAI Assistant: receive nested submit tool response", nestedEvent);
-                                                    }
-                                                    if (nestedEvent.event === 'thread.message.delta') {
-                                                        const chunk = nestedEvent.data.delta.content?.[0]
-                                                        if (chunk && 'text' in chunk && chunk.text?.value) {
-                                                            text += chunk.text.value
-                                                            if (!isStreamingStarted) {
-                                                                isStreamingStarted = true
-                                                                if (sseStreamer) {
-                                                                    sseStreamer.streamStartEvent(chatId, chunk.text.value)
-                                                                }
-                                                            }
-                                                            if (sseStreamer) {
-                                                                sseStreamer.streamTokenEvent(chatId, chunk.text.value)
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            } catch (error) {
-                                                console.error('Error submitting nested tool outputs:', error)
-                                                await openai.beta.threads.runs.cancel(threadId, runThreadId)
-
-                                                const errMsg = `Error submitting nested tool outputs. Thread ID: ${threadId}. Run ID: ${runThreadId}`
-
-                                                await analyticHandlers.onLLMError(llmIds, errMsg)
-                                                await analyticHandlers.onChainError(parentIds, errMsg, true)
-
-                                                throw new Error(errMsg)
-                                            }
-                                        }
-                                    }
-                                }
-                                if (sseStreamer) {
-                                    sseStreamer.streamUsedToolsEvent(chatId, usedTools)
-                                }
                             } catch (error) {
                                 console.error('Error submitting tool outputs:', error)
                                 await openai.beta.threads.runs.cancel(threadId, runThreadId)
@@ -720,19 +633,20 @@ class OpenAIAssistant_Agents implements INode {
                                     const actions: ICommonObject[] = []
                                     run.required_action.submit_tool_outputs.tool_calls.forEach((item) => {
                                         const functionCall = item.function
-                                        let args = {}
-                                        try {
-                                            args = JSON.parse(functionCall.arguments)
-                                        } catch (e) {
-                                            console.error('Error parsing arguments, default to empty object')
-                                        }
+                                let args: Record<string, any> = {}
+                                try {
+                                    args = JSON.parse(functionCall.arguments)
+                                    //args = removeNulls(args)
+                                } catch (e) {
+                                    console.error('Error parsing arguments, default to empty object')
+                                }
                                         actions.push({
                                             tool: functionCall.name,
                                             toolInput: args,
                                             toolCallId: item.id
                                         })
                                     })
-
+                                    console.log("OpenAIAssistant requires_action:", run.required_action?.submit_tool_outputs.tool_calls, actions)
                                     const submitToolOutputs = []
                                     for (let i = 0; i < actions.length; i += 1) {
                                         const tool = tools.find((tool: any) => tool.name === actions[i].tool)
@@ -990,6 +904,171 @@ const downloadFile = async (openAIApiKey: string, fileObj: any, fileName: string
     } catch (error) {
         console.error('Error downloading or writing the file:', error)
         return ''
+    }
+}
+
+interface ToolSubmissionParams {
+    openai: OpenAI
+    threadId: string
+    runThreadId: string
+    submitToolOutputs: any[]
+    tools: any[]
+    analyticHandlers: AnalyticHandler
+    parentIds: ICommonObject
+    llmIds: ICommonObject
+    sseStreamer: IServerSideEventStreamer
+    chatId: string
+    options: ICommonObject
+    input: string
+    usedTools: IUsedTool[]
+    text: string
+    isStreamingStarted: boolean
+}
+
+interface ToolSubmissionResult {
+    text: string
+    isStreamingStarted: boolean
+}
+
+async function handleToolSubmission(params: ToolSubmissionParams): Promise<ToolSubmissionResult> {
+    const {
+        openai,
+        threadId,
+        runThreadId,
+        submitToolOutputs,
+        tools,
+        analyticHandlers,
+        parentIds,
+        llmIds,
+        sseStreamer,
+        chatId,
+        options,
+        input,
+        usedTools,
+        text,
+        isStreamingStarted
+    } = params
+
+    let updatedText = params.text
+    let updatedIsStreamingStarted = params.isStreamingStarted
+
+    console.log("OpenAI Assistant: submit tool outputs!")
+    const stream = openai.beta.threads.runs.submitToolOutputsStream(threadId, runThreadId, {
+        tool_outputs: submitToolOutputs
+    })
+
+    try {
+        for await (const event of stream) {
+            if (event.event === 'thread.message.delta') {
+                const chunk = event.data.delta.content?.[0]
+                if (chunk && 'text' in chunk && chunk.text?.value) {
+                    updatedText += chunk.text.value
+                    if (!updatedIsStreamingStarted) {
+                        updatedIsStreamingStarted = true
+                        if (sseStreamer) {
+                            sseStreamer.streamStartEvent(chatId, chunk.text.value)
+                        }
+                    }
+                    if (sseStreamer) {
+                        sseStreamer.streamTokenEvent(chatId, chunk.text.value)
+                    }
+                }
+            } else if (event.event === 'thread.run.requires_action') {
+                if (event.data.required_action?.submit_tool_outputs.tool_calls) {
+                    const actions: ICommonObject[] = []
+                    
+                    event.data.required_action.submit_tool_outputs.tool_calls.forEach((item) => {
+                        const functionCall = item.function
+                        let args: Record<string, any> = {}
+                        try {
+                            args = JSON.parse(functionCall.arguments)
+                            //args = removeNulls(args)
+                        } catch (e) {
+                            console.error('Error parsing arguments, default to empty object')
+                        }
+                        actions.push({
+                            tool: functionCall.name,
+                            toolInput: args,
+                            toolCallId: item.id
+                        })
+                    })
+                    console.log("OpenAIAssistant nested tools calls:", event.data.required_action.submit_tool_outputs.tool_calls, actions)
+
+                    const nestedToolOutputs = []
+                    for (let i = 0; i < actions.length; i += 1) {
+                        const tool = tools.find((tool: any) => tool.name === actions[i].tool)
+                        if (!tool) continue
+
+                        const toolIds = await analyticHandlers.onToolStart(tool.name, actions[i].toolInput, parentIds )
+
+                        try {
+                            const toolOutput = await tool.call(actions[i].toolInput, undefined, undefined, {
+                                sessionId: threadId,
+                                chatId: options.chatId,
+                                input
+                            })
+                            console.log("Assistant nested toolOutput:", toolOutput)
+                            await analyticHandlers.onToolEnd(toolIds, toolOutput)
+                            nestedToolOutputs.push({
+                                tool_call_id: actions[i].toolCallId,
+                                output: toolOutput
+                            })
+                            usedTools.push({
+                                tool: tool.name,
+                                toolInput: actions[i].toolInput,
+                                toolOutput
+                            })
+                        } catch (e) {
+                            await analyticHandlers.onToolEnd(toolIds, e)
+                            console.error('Error executing tool', e)
+                            throw new Error(
+                                `Error executing tool. Tool: ${tool.name}. Thread ID: ${threadId}. Run ID: ${runThreadId}`
+                            )
+                        }
+                    }
+
+                    // Recursively handle nested tool submissions
+                    const result = await handleToolSubmission({
+                        openai,
+                        threadId,
+                        runThreadId,
+                        submitToolOutputs: nestedToolOutputs,
+                        tools,
+                        analyticHandlers,
+                        parentIds,
+                        llmIds,
+                        sseStreamer,
+                        chatId,
+                        options,
+                        input,
+                        usedTools,
+                        text: updatedText,
+                        isStreamingStarted: updatedIsStreamingStarted
+                    })
+                    updatedText = result.text
+                    updatedIsStreamingStarted = result.isStreamingStarted
+                }
+            }
+        }
+
+        if (sseStreamer) {
+            sseStreamer.streamUsedToolsEvent(chatId, usedTools)
+        }
+
+        return {
+            text: updatedText,
+            isStreamingStarted: updatedIsStreamingStarted
+        }
+    } catch (error) {
+        console.error('Error submitting tool outputs:', error)
+        await openai.beta.threads.runs.cancel(threadId, runThreadId)
+
+        const errMsg = `Error submitting tool outputs. Thread ID: ${threadId}. Run ID: ${runThreadId}`
+
+        await analyticHandlers.onLLMError(llmIds, errMsg)
+        await analyticHandlers.onChainError(parentIds, errMsg, true)
+
+        throw new Error(errMsg)
     }
 }
 
