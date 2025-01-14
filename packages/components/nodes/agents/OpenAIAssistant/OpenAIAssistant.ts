@@ -23,21 +23,6 @@ import { DynamicStructuredTool } from '../../tools/OpenAPIToolkit/core'
 const lenticularBracketRegex = /【[^】]*】/g
 const imageRegex = /<img[^>]*\/>/g
 
-const removeNulls = (obj: Record<string, any>) => {
-    Object.keys(obj).forEach(key => {
-        if (obj[key] === null) {
-            delete obj[key]
-        } else if (typeof obj[key] === 'object' && obj[key] !== null) {
-            removeNulls(obj[key])
-            // If the object is empty after removing nulls, remove it too
-            if (Object.keys(obj[key]).length === 0) {
-                delete obj[key]
-            }
-        }
-    })
-    return obj
-}
-
 class OpenAIAssistant_Agents implements INode {
     label: string
     name: string
@@ -508,10 +493,9 @@ class OpenAIAssistant_Agents implements INode {
                             const actions: ICommonObject[] = []
                             event.data.required_action.submit_tool_outputs.tool_calls.forEach((item) => {
                                 const functionCall = item.function
-                                let args: Record<string, any> = {}
+                                let args = {}
                                 try {
                                     args = JSON.parse(functionCall.arguments)
-                                    //args = removeNulls(args)
                                 } catch (e) {
                                     console.error('Error parsing arguments, default to empty object')
                                 }
@@ -521,14 +505,13 @@ class OpenAIAssistant_Agents implements INode {
                                     toolCallId: item.id
                                 })
                             })
-                            console.log("OpenAIAssistant tools calls:", event.data.required_action.submit_tool_outputs.tool_calls, actions)
                             const submitToolOutputs = []
                             for (let i = 0; i < actions.length; i += 1) {
                                 const tool = tools.find((tool: any) => tool.name === actions[i].tool)
                                 if (!tool) continue
 
                                 // Start tool analytics
-                                const toolIds = await analyticHandlers.onToolStart(tool.name, actions[i].toolInput, parentIds )
+                                const toolIds = await analyticHandlers.onToolStart(tool.name, actions[i].toolInput, parentIds)
 
                                 try {
                                     const toolOutput = await tool.call(actions[i].toolInput, undefined, undefined, {
@@ -536,7 +519,6 @@ class OpenAIAssistant_Agents implements INode {
                                         chatId: options.chatId,
                                         input
                                     })
-                                    console.log("Assistant toolOutput...")
                                     await analyticHandlers.onToolEnd(toolIds, toolOutput)
                                     submitToolOutputs.push({
                                         tool_call_id: actions[i].toolCallId,
@@ -633,20 +615,18 @@ class OpenAIAssistant_Agents implements INode {
                                     const actions: ICommonObject[] = []
                                     run.required_action.submit_tool_outputs.tool_calls.forEach((item) => {
                                         const functionCall = item.function
-                                let args: Record<string, any> = {}
-                                try {
-                                    args = JSON.parse(functionCall.arguments)
-                                    //args = removeNulls(args)
-                                } catch (e) {
-                                    console.error('Error parsing arguments, default to empty object')
-                                }
+                                        let args = {}
+                                        try {
+                                            args = JSON.parse(functionCall.arguments)
+                                        } catch (e) {
+                                            console.error('Error parsing arguments, default to empty object')
+                                        }
                                         actions.push({
                                             tool: functionCall.name,
                                             toolInput: args,
                                             toolCallId: item.id
                                         })
                                     })
-                                    console.log("OpenAIAssistant requires_action:", run.required_action?.submit_tool_outputs.tool_calls, actions)
                                     const submitToolOutputs = []
                                     for (let i = 0; i < actions.length; i += 1) {
                                         const tool = tools.find((tool: any) => tool.name === actions[i].tool)
@@ -951,8 +931,7 @@ async function handleToolSubmission(params: ToolSubmissionParams): Promise<ToolS
 
     let updatedText = params.text
     let updatedIsStreamingStarted = params.isStreamingStarted
-
-    console.log("OpenAI Assistant: submit tool outputs!")
+    
     const stream = openai.beta.threads.runs.submitToolOutputsStream(threadId, runThreadId, {
         tool_outputs: submitToolOutputs
     })
@@ -979,10 +958,9 @@ async function handleToolSubmission(params: ToolSubmissionParams): Promise<ToolS
                     
                     event.data.required_action.submit_tool_outputs.tool_calls.forEach((item) => {
                         const functionCall = item.function
-                        let args: Record<string, any> = {}
+                        let args = {}
                         try {
                             args = JSON.parse(functionCall.arguments)
-                            //args = removeNulls(args)
                         } catch (e) {
                             console.error('Error parsing arguments, default to empty object')
                         }
@@ -992,7 +970,6 @@ async function handleToolSubmission(params: ToolSubmissionParams): Promise<ToolS
                             toolCallId: item.id
                         })
                     })
-                    console.log("OpenAIAssistant nested tools calls:", event.data.required_action.submit_tool_outputs.tool_calls, actions)
 
                     const nestedToolOutputs = []
                     for (let i = 0; i < actions.length; i += 1) {
@@ -1007,7 +984,6 @@ async function handleToolSubmission(params: ToolSubmissionParams): Promise<ToolS
                                 chatId: options.chatId,
                                 input
                             })
-                            console.log("Assistant nested toolOutput:", toolOutput)
                             await analyticHandlers.onToolEnd(toolIds, toolOutput)
                             nestedToolOutputs.push({
                                 tool_call_id: actions[i].toolCallId,
@@ -1120,7 +1096,6 @@ const formatToOpenAIAssistantTool = (tool: any): OpenAI.Beta.FunctionTool => {
         (functionTool.function as any).strict = true
     }
 
-    console.log("formatToOpenAIAssistantTool", functionTool, JSON.stringify(parameters))
     return functionTool
 }
 
