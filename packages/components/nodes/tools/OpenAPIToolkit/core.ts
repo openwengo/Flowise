@@ -161,7 +161,6 @@ export class DynamicStructuredTool<
         this.customCode = fields.customCode
         this.strict = fields.strict
         this.removeNulls = fields.removeNulls ?? false
-        console.log(`construct tool with name: ${this.name}, baseUrl: ${this.baseUrl}, method: ${this.method}, schema: ${JSON.stringify(this.schema)}`)
     }
 
     async call(
@@ -178,9 +177,7 @@ export class DynamicStructuredTool<
         try {
             parsed = await this.schema.parseAsync(arg)
         } catch (e) {
-            //throw new ToolInputParsingException(`Received tool input did not match expected schema`, JSON.stringify(arg))
-            console.log(`Received tool input did not match expected schema`, JSON.stringify(arg), this.schema)
-            parsed = arg
+            throw new ToolInputParsingException(`Received tool input did not match expected schema`, JSON.stringify(arg))
         }
         const callbackManager_ = await CallbackManager.configure(
             config.callbacks,
