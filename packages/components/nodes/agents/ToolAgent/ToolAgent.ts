@@ -316,7 +316,12 @@ const prepareAgent = async (
         throw new Error(`This agent requires that the "bindTools()" method be implemented on the input model.`)
     }
 
-    const modelWithTools = model.bindTools(tools)
+    // Check if all tools are strict
+    const allToolsAreStrict: boolean = tools.every((tool: any) => tool.isStrict?.() === true)
+    
+    // If all tools are strict, bind them all as strict, otherwise bind normally
+
+    const modelWithTools = (model as any).bindTools(tools, { strict: allToolsAreStrict })
 
     const runnableAgent = RunnableSequence.from([
         {
