@@ -101,6 +101,17 @@ class ToolAgent_Agents implements INode {
                 type: 'number',
                 optional: true,
                 additionalParams: true
+            },
+            {
+                label: 'Json Output Format',
+                name: 'jsonoutputformat',
+                type: 'string',
+                default: '',
+                description:
+                    'A json spec for output format, only compatible with model supporting json structured output: ChatOpenAI with gpt-4o-2024-08-06 or more recent',
+                rows: 4,
+                optional: true,
+                additionalParams: true
             }
         ]
         this.sessionId = fields?.sessionId
@@ -248,6 +259,7 @@ const prepareAgent = async (
     const memoryKey = memory.memoryKey ? memory.memoryKey : 'chat_history'
     const inputKey = memory.inputKey ? memory.inputKey : 'input'
     const prependMessages = options?.prependMessages
+    const jsonOutputFormat = nodeData.inputs?.jsonoutputformat
 
     systemMessage = transformBracesWithColon(systemMessage)
 
@@ -318,10 +330,19 @@ const prepareAgent = async (
 
     // Check if all tools are strict
     const allToolsAreStrict: boolean = tools.every((tool: any) => tool.isStrict?.() === true)
-    
-    // If all tools are strict, bind them all as strict, otherwise bind normally
 
-    const modelWithTools = (model as any).bindTools(tools, { strict: allToolsAreStrict })
+    // If all tools are strict, bind them all as strict, otherwise bind normally
+    let call_options: any = {}
+
+    if (allToolsAreStrict) {
+        call_options = { ...call_options, strict: true }
+    }
+
+    if (jsonOutputFormat) {
+        call_options = { ...call_options, response_format: { type: 'json_schema', json_schema: JSON.parse(jsonOutputFormat) } }
+    }
+
+    const modelWithTools = (model as any).bindTools(tools, call_options)
 
     const runnableAgent = RunnableSequence.from([
         {
