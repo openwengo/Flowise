@@ -198,7 +198,29 @@ class ToolAgent_Agents implements INode {
         }
 
         let output = res?.output
-        output = extractOutputFromArray(res?.output)
+
+        // Handle JSON structured output if configured
+        const jsonOutputFormat = nodeData.inputs?.jsonoutputformat
+        if (jsonOutputFormat && output) {
+            try {
+                // Try to parse JSON before any text transformations
+                const parsedOutput = JSON.parse(typeof output === 'string' ? output : JSON.stringify(output))
+                if (parsedOutput.message && parsedOutput.custom_payload) {
+                    // Send custom_payload as metadata event
+                    if (shouldStreamResponse && sseStreamer) {
+                        sseStreamer.streamCustomEvent(chatId, 'metadata', parsedOutput.custom_payload)
+                    }
+                    // Use message as the main output
+                    output = parsedOutput.message
+                }
+            } catch (e) {
+                // If JSON parsing fails, use the output as-is
+                console.error('Failed to parse JSON output:', e)
+            }
+        }
+
+        // Apply text transformations after JSON handling
+        output = extractOutputFromArray(output)
         output = removeInvalidImageMarkdown(output)
 
         // Claude 3 Opus tends to spit out <thinking>..</thinking> as well, discard that in final output
